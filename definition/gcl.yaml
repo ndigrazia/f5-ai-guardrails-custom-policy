@@ -23,6 +23,12 @@ spec:
       type: string
       description: The secret token for authenticating the request.
       default: my_secret_token_123
+      "@context": {
+        "@characteristics": [
+          "security:sensitive"
+        ]
+      }
+
   required:
     - externalService
     - endpointPath
