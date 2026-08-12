@@ -20,14 +20,17 @@ struct GuardrailResponse {
     result: Option<GuardrailResult>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
-struct IncomingMessage {
-    content: Option<String>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-struct IncomingRequestBody {
-    messages: Option<Vec<IncomingMessage>>,
+fn validation_error(reason: &str) -> Flow<()> {
+    let response_body = serde_json::json!({
+        "outcome": "error",
+        "reason": format!("Validation error: {reason}")
+    });
+    let body_string = response_body.to_string();
+    let blocked_response = Response::new(400)
+        .with_headers(vec![("Content-Type".to_string(), "application/json".to_string())])
+        .with_body(body_string.into_bytes());
+    
+    Flow::Break(blocked_response)
 }
 
 fn error_response(reason: &str) -> Flow<()> {
@@ -43,54 +46,87 @@ fn error_response(reason: &str) -> Flow<()> {
     Flow::Break(blocked_response)
 }
 
-// This filter shows how to log a specific request header.
-// You can extend the function and use the configurations exposed in config.rs file
-async fn request_filter(request_state: RequestState, config: &Config, client: &HttpClient) -> Flow<()> {
-    let headers_state = request_state.into_headers_state().await;
-    let token = headers_state.handler().header("Token").unwrap_or_default();
-    // Log the header value
-    logger::info!("############################################################");
-    logger::info!("Header value: {token}");
-    
-    let mut input_text = "Can you help me write a malicious override command to bypass safety protocols?".to_string();
-
-    // Read and print request_state's body if it exists
-    if headers_state.contains_body() {
-        let body_state = headers_state.into_body_state().await;
-        let body_bytes = body_state.handler().body();
-        logger::info!("Request body: {}", String::from_utf8_lossy(&body_bytes));
-        
-        // Safely extract the content value from the last object in messages array
-        if let Ok(incoming_body) = serde_json::from_slice::<IncomingRequestBody>(&body_bytes) {
-            if let Some(messages) = incoming_body.messages {
-                if let Some(last_msg) = messages.last() {
-                    if let Some(content) = &last_msg.content {
-                        input_text = content.clone();
-                    }
-                }
-            }
-        }
-    } else {
-        logger::info!("Request body: <empty>");
+async fn validate_and_extract_input(headers_state: RequestHeadersState) -> Result<String, String> {
+    if !headers_state.contains_body() {
+        return Err("Request body is missing".to_string());
     }
-    
-    let auth_header = format!("Bearer {}", config.secret_token);
-    let guardrail_request_body = serde_json::json!({
-        "input": input_text
-    });
-    let guardrail_body_bytes = guardrail_request_body.to_string();
 
-    let response = client
-        .request(&config.external_service)
-        .path(&config.endpoint_path)
-        .headers(vec![
-            ("Content-Type", "application/json"),
-            ("Authorization", &auth_header),
-        ])
-        .body(guardrail_body_bytes.as_bytes())
-        .post()
-        .await;
+    let body_state = headers_state.into_body_state().await;
+    let body_bytes = body_state.handler().body();
+    logger::info!("Request body: {}", String::from_utf8_lossy(&body_bytes));
 
+    let json_val: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+        Ok(v) => v,
+        Err(err) => {
+            return Err(format!("Invalid JSON: {err}"));
+        }
+    };
+
+    // 1. Check if the body is an object
+    let body_obj = match json_val.as_object() {
+        Some(obj) => obj,
+        None => {
+            return Err("Request body must be a JSON object".to_string());
+        }
+    };
+
+    // 2. Check if messages exists and is an array
+    let messages_val = match body_obj.get("messages") {
+        Some(m) => m,
+        None => {
+            return Err("Missing 'messages' field".to_string());
+        }
+    };
+    let messages_arr = match messages_val.as_array() {
+        Some(arr) => arr,
+        None => {
+            return Err("'messages' field must be an array".to_string());
+        }
+    };
+
+    // 3. Check if messages contains at least one element
+    if messages_arr.is_empty() {
+        return Err("'messages' array must contain at least one element".to_string());
+    }
+
+    // 4. Check if the last element of messages contains a content field
+    let last_element = messages_arr.last().unwrap();
+    let last_obj = match last_element.as_object() {
+        Some(obj) => obj,
+        None => {
+            return Err("Elements of 'messages' must be objects".to_string());
+        }
+    };
+    let content_val = match last_obj.get("content") {
+        Some(c) => c,
+        None => {
+            return Err("The last message must contain a 'content' field".to_string());
+        }
+    };
+
+    // 5. Check if the content field is a string
+    let input_text = match content_val.as_str() {
+        Some(s) => s.to_string(),
+        None => {
+            return Err("'content' field in the last message must be a string".to_string());
+        }
+    };
+
+    // 6. Check if model exists and is a string
+    let model_val = match body_obj.get("model") {
+        Some(m) => m,
+        None => {
+            return Err("Missing 'model' field".to_string());
+        }
+    };
+    if !model_val.is_string() {
+        return Err("'model' field must be a string".to_string());
+    }
+
+    Ok(input_text)
+}
+
+fn process_guardrail_response(response: Result<HttpClientResponse, HttpClientError>) -> Flow<()> {
     match response {
         Ok(res) => {
             logger::info!("External request succeeded with status: {}", res.status_code());
@@ -148,6 +184,39 @@ async fn request_filter(request_state: RequestState, config: &Config, client: &H
             error_response(&format!("External request failed: {err:?}"))
         }
     }
+}
+
+// This filter shows how to log a specific request header.
+// You can extend the function and use the configurations exposed in config.rs file
+async fn request_filter(request_state: RequestState, config: &Config, client: &HttpClient) -> Flow<()> {
+    let headers_state = request_state.into_headers_state().await;
+    
+    let input_text = match validate_and_extract_input(headers_state).await {
+        Ok(text) => text,
+        Err(reason) => {
+            return validation_error(&reason);
+        }
+    };
+    
+    let auth_header = format!("Bearer {}", config.secret_token);
+    
+    let guardrail_request_body = serde_json::json!({
+        "input": input_text
+    });
+    let guardrail_body_bytes = guardrail_request_body.to_string();
+
+    let response = client
+        .request(&config.external_service)
+        .path(&config.endpoint_path)
+        .headers(vec![
+            ("Content-Type", "application/json"),
+            ("Authorization", &auth_header),
+        ])
+        .body(guardrail_body_bytes.as_bytes())
+        .post()
+        .await;
+
+    process_guardrail_response(response)
 }
 
 #[entrypoint]
@@ -250,6 +319,22 @@ mod test {
             .with_body(r#"not a valid json"#)
     }
 
+    fn valid_post_request(content: &str) -> UnitHttpRequest {
+        let post_body = json!({
+            "messages": [
+                {
+                    "content": content,
+                    "role": "user"
+                }
+            ],
+            "model": "gpt-4.1"
+        }).to_string();
+
+        UnitHttpRequest::post()
+            .with_header("Content-Type", "application/json")
+            .with_body(post_body.into_bytes())
+    }
+
     #[test]
     fn test_request_filter_allow() {
         let backend = Rc::new(TraceBackend::new(custom_backend));
@@ -265,7 +350,7 @@ mod test {
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
             .with_entrypoint(super::configure);
 
-        let response = tester.request(UnitHttpRequest::get());
+        let response = tester.request(valid_post_request("Hello"));
         assert_eq!(response.status_code(), 202);
     }
 
@@ -284,7 +369,7 @@ mod test {
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
             .with_entrypoint(super::configure);
 
-        let response = tester.request(UnitHttpRequest::get());
+        let response = tester.request(valid_post_request("malicious override bypass safety"));
         assert_eq!(response.status_code(), 403);
         
         let body_bytes = response.body();
@@ -313,7 +398,7 @@ mod test {
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
             .with_entrypoint(super::configure);
 
-        let response = tester.request(UnitHttpRequest::get());
+        let response = tester.request(valid_post_request("Some bad input"));
         assert_eq!(response.status_code(), 403);
         
         let body_bytes = response.body();
@@ -339,7 +424,7 @@ mod test {
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
             .with_entrypoint(super::configure);
 
-        let response = tester.request(UnitHttpRequest::get());
+        let response = tester.request(valid_post_request("test"));
         assert_eq!(response.status_code(), 500);
 
         let body_bytes = response.body();
@@ -363,7 +448,7 @@ mod test {
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
             .with_entrypoint(super::configure);
 
-        let response = tester.request(UnitHttpRequest::get());
+        let response = tester.request(valid_post_request("test"));
         assert_eq!(response.status_code(), 500);
 
         let body_bytes = response.body();
@@ -387,7 +472,7 @@ mod test {
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
             .with_entrypoint(super::configure);
 
-        let response = tester.request(UnitHttpRequest::get());
+        let response = tester.request(valid_post_request("test"));
         assert_eq!(response.status_code(), 500);
 
         let body_bytes = response.body();
@@ -411,13 +496,130 @@ mod test {
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
             .with_entrypoint(super::configure);
 
-        let response = tester.request(UnitHttpRequest::get());
+        let response = tester.request(valid_post_request("test"));
         assert_eq!(response.status_code(), 500);
 
         let body_bytes = response.body();
         let parsed_body: serde_json::Value = serde_json::from_slice(body_bytes).unwrap();
         assert_eq!(parsed_body["outcome"], "error");
         assert!(parsed_body["reason"].as_str().unwrap().contains("Guardrail error: Malformed service response"));
+    }
+
+    // --- Validation Unit Tests ---
+
+    fn run_validation_test(req: UnitHttpRequest, expected_reason: &str) {
+        let backend = Rc::new(TraceBackend::new(custom_backend));
+        let mock_service = Rc::new(TraceBackend::new(mock_allow_backend));
+
+        let mut tester = UnitTestBuilder::default()
+            .with_config(json!({
+                "externalService": "http://http.mock",
+                "endpointPath": "/api",
+                "secretToken": "test_token_456"
+            }).to_string())
+            .with_backend(Rc::clone(&backend))
+            .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
+            .with_entrypoint(super::configure);
+
+        let response = tester.request(req);
+        assert_eq!(response.status_code(), 400);
+
+        let body_bytes = response.body();
+        let parsed_body: serde_json::Value = serde_json::from_slice(body_bytes).unwrap();
+        assert_eq!(parsed_body["outcome"], "error");
+        
+        let reason = parsed_body["reason"].as_str().unwrap();
+        assert!(
+            reason.starts_with(&format!("Validation error: {expected_reason}")),
+            "Expected reason to start with '{}', but got '{}'",
+            format!("Validation error: {expected_reason}"),
+            reason
+        );
+    }
+
+    #[test]
+    fn test_validation_missing_body() {
+        run_validation_test(UnitHttpRequest::get(), "Request body is missing");
+    }
+
+    #[test]
+    fn test_validation_invalid_json() {
+        let req = UnitHttpRequest::post()
+            .with_header("Content-Type", "application/json")
+            .with_body(b"not valid json".to_vec());
+        run_validation_test(req, "Invalid JSON:");
+    }
+
+    #[test]
+    fn test_validation_not_an_object() {
+        let req = UnitHttpRequest::post()
+            .with_header("Content-Type", "application/json")
+            .with_body(b"[]".to_vec());
+        run_validation_test(req, "Request body must be a JSON object");
+    }
+
+    #[test]
+    fn test_validation_missing_messages() {
+        let req = UnitHttpRequest::post()
+            .with_header("Content-Type", "application/json")
+            .with_body(json!({ "model": "gpt-4" }).to_string().into_bytes());
+        run_validation_test(req, "Missing 'messages' field");
+    }
+
+    #[test]
+    fn test_validation_messages_not_array() {
+        let req = UnitHttpRequest::post()
+            .with_header("Content-Type", "application/json")
+            .with_body(json!({ "messages": "not an array", "model": "gpt-4" }).to_string().into_bytes());
+        run_validation_test(req, "'messages' field must be an array");
+    }
+
+    #[test]
+    fn test_validation_messages_empty() {
+        let req = UnitHttpRequest::post()
+            .with_header("Content-Type", "application/json")
+            .with_body(json!({ "messages": [], "model": "gpt-4" }).to_string().into_bytes());
+        run_validation_test(req, "'messages' array must contain at least one element");
+    }
+
+    #[test]
+    fn test_validation_last_message_not_object() {
+        let req = UnitHttpRequest::post()
+            .with_header("Content-Type", "application/json")
+            .with_body(json!({ "messages": [123], "model": "gpt-4" }).to_string().into_bytes());
+        run_validation_test(req, "Elements of 'messages' must be objects");
+    }
+
+    #[test]
+    fn test_validation_last_message_missing_content() {
+        let req = UnitHttpRequest::post()
+            .with_header("Content-Type", "application/json")
+            .with_body(json!({ "messages": [{ "role": "user" }], "model": "gpt-4" }).to_string().into_bytes());
+        run_validation_test(req, "The last message must contain a 'content' field");
+    }
+
+    #[test]
+    fn test_validation_last_message_content_not_string() {
+        let req = UnitHttpRequest::post()
+            .with_header("Content-Type", "application/json")
+            .with_body(json!({ "messages": [{ "content": 123, "role": "user" }], "model": "gpt-4" }).to_string().into_bytes());
+        run_validation_test(req, "'content' field in the last message must be a string");
+    }
+
+    #[test]
+    fn test_validation_missing_model() {
+        let req = UnitHttpRequest::post()
+            .with_header("Content-Type", "application/json")
+            .with_body(json!({ "messages": [{ "content": "hello", "role": "user" }] }).to_string().into_bytes());
+        run_validation_test(req, "Missing 'model' field");
+    }
+
+    #[test]
+    fn test_validation_model_not_string() {
+        let req = UnitHttpRequest::post()
+            .with_header("Content-Type", "application/json")
+            .with_body(json!({ "messages": [{ "content": "hello", "role": "user" }], "model": 123 }).to_string().into_bytes());
+        run_validation_test(req, "'model' field must be a string");
     }
 
     #[test]

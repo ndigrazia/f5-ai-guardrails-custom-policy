@@ -72,14 +72,41 @@ async fn hello() -> anyhow::Result<()> {
     // Create a MockServer
     let mock_server = MockServer::connect_async(httpmock.socket()).await;
 
+    // Mock the external guardrail service /anything/echo
+    mock_server.mock_async(|when, then| {
+        when.path_contains("/anything/echo");
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .body(r#"{
+                "result": {
+                    "outcome": "allow",
+                    "reason": "Passed",
+                    "violations": []
+                }
+            }"#);
+    }).await;
+
     // Mock a /hello request
     mock_server.mock_async(|when, then| {
         when.path_contains("/hello");
         then.status(202).body("World!");
     }).await;
 
-    // Perform an actual request
-    let response = reqwest::get(format!("{flex_url}/hello")).await?;
+    // Perform an actual request sending the expected request structure as a JSON body
+    let client = reqwest::Client::new();
+    let response = client.post(format!("{flex_url}/anything/echo/hello"))
+        .header("Content-Type", "application/json")
+        .body(serde_json::json!({
+            "messages": [
+                {
+                    "content": "Que es un ADR en 10 palabras.",
+                    "role": "user"
+                }
+            ],
+            "model": "gpt-4.1"
+        }).to_string())
+        .send()
+        .await?;
 
     // Assert on the response
     assert_eq!(response.status(), 202);
