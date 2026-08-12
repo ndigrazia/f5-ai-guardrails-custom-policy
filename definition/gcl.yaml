@@ -1,0 +1,23 @@
+---
+apiVersion: gateway.mulesoft.com/v1alpha1
+kind: Extension
+metadata:
+  labels:
+    title: f5-ai-guardrails-custom-policy
+    category: Custom
+    metadata/interfaceScope: api,resource
+spec:
+  extends:
+    - name: extension-definition
+      namespace: default
+  properties:
+    stringProperty:
+      type: string
+      default: some value
+    externalService:
+      type: string
+      format: service
+    endpointPath:
+      type: string
+  required:
+    - stringProperty
