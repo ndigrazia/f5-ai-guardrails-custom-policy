@@ -42,6 +42,15 @@ async fn request_filter(request_state: RequestState, config: &Config, client: &H
     logger::info!("############################################################");
     logger::info!("Header value: {token}");
     
+    // Read and print request_state's body if it exists
+    if headers_state.contains_body() {
+        let body_state = headers_state.into_body_state().await;
+        let body_bytes = body_state.handler().body();
+        logger::info!("Request body: {}", String::from_utf8_lossy(&body_bytes));
+    } else {
+        logger::info!("Request body: <empty>");
+    }
+    
     let auth_header = format!("Bearer {}", config.secret_token);
     let response = client
         .request(&config.external_service)
