@@ -17,33 +17,27 @@ async fn request_filter(request_state: RequestState, config: &Config, client: &H
     logger::info!("############################################################");
     logger::info!("Header value: {token}");
     
-    if let (Some(external_service), Some(endpoint_path)) = (&config.external_service, &config.endpoint_path) {
-        let response = client
-            .request(external_service)
-            .path(endpoint_path)
-            .headers(vec![
-                ("Content-Type", "application/json"),
-                ("Authorization", "Bearer my_secret_token_123"),
-            ])
-            .body(r#"{"input": "Hello! How can I build a web app using FastAPI?"}"#.as_bytes())
-            .post()
-            .await;
+    let auth_header = format!("Bearer {}", config.secret_token);
+    let response = client
+        .request(&config.external_service)
+        .path(&config.endpoint_path)
+        .headers(vec![
+            ("Content-Type", "application/json"),
+            ("Authorization", &auth_header),
+        ])
+        .body(r#"{"input": "Hello! How can I build a web app using FastAPI?"}"#.as_bytes())
+        .post()
+        .await;
 
-        match response {
-            Ok(res) => {
-                logger::info!("External request succeeded with status: {}", res.status_code());
-                logger::info!("Response Body: {}", String::from_utf8_lossy(res.body()));
-            }
-            Err(err) => {
-                logger::error!("External request failed: {:?}", err);
-            }
+    match response {
+        Ok(res) => {
+            logger::info!("External request succeeded with status: {}", res.status_code());
+            logger::info!("Response Body: {}", String::from_utf8_lossy(res.body()));
+        }
+        Err(err) => {
+            logger::error!("External request failed: {:?}", err);
         }
     }
-    
-    // Add a new header
-    headers_state
-        .handler()
-        .set_header("x-added", &config.string_property);
 }
 
 #[entrypoint]
@@ -62,7 +56,7 @@ async fn configure(launcher: Launcher, Configuration(bytes): Configuration, clie
 
 #[cfg(test)]
 mod test {
-    use pdk_unit::{UnitTestBuilder, TraceBackend, UnitHttpMessage, UnitHttpRequest, UnitHttpResponse};
+    use pdk_unit::{UnitTestBuilder, TraceBackend, UnitHttpRequest, UnitHttpResponse};
     use serde_json::json;
     use std::rc::Rc;
 
@@ -78,16 +72,16 @@ mod test {
 
         // Create a tester with the custom backend, the policy to test, and its configuration.
         let mut tester = UnitTestBuilder::default()
-            .with_config(json!({"stringProperty": "custom"}).to_string())
+            .with_config(json!({
+                "externalService": "http://http.mock",
+                "endpointPath": "/api",
+                "secretToken": "test_token_456"
+            }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_entrypoint(super::configure);
 
         // Send a GET request to the policy and verify the response.
         let response = tester.request(UnitHttpRequest::get());
         assert_eq!(response.status_code(), 202);
-
-        // We obtain the request that reached the backend and verify the header was added.
-        let request = backend.next().unwrap();
-        assert_eq!(request.header("x-added"), Some("custom"));
     }
 }

@@ -20,5 +20,7 @@ spec:
       # definition gcl.yaml. Eg:
       # config:
       #   someProperty: desiredValue
-      config: 
-        stringProperty: "some value"
+      config:
+        externalService: backend
+        endpointPath: /backend/v1/scans
+        secretToken: my_secret_token_123

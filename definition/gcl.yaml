@@ -11,13 +11,19 @@ spec:
     - name: extension-definition
       namespace: default
   properties:
-    stringProperty:
-      type: string
-      default: some value
     externalService:
       type: string
       format: service
+      description: The external service to which the request will be sent. 
     endpointPath:
       type: string
+      default: /backend/v1/scans
+      description: The path of the endpoint to which the request will be sent.
+    secretToken:
+      type: string
+      description: The secret token for authenticating the request.
+      default: my_secret_token_123
   required:
-    - stringProperty
+    - externalService
+    - endpointPath
+    - secretToken

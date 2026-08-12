@@ -2,15 +2,14 @@ use serde::Deserialize;
 #[derive(Deserialize, Clone, Debug)]
 pub struct Config {
     #[serde(alias = "endpointPath")]
-    pub endpoint_path: Option<String>,
+    pub endpoint_path: String,
     #[serde(
         alias = "externalService",
-        default,
-        deserialize_with = "pdk::serde::deserialize_service_opt"
+        deserialize_with = "pdk::serde::deserialize_service"
     )]
-    pub external_service: Option<pdk::hl::Service>,
-    #[serde(alias = "stringProperty")]
-    pub string_property: String,
+    pub external_service: pdk::hl::Service,
+    #[serde(alias = "secretToken")]
+    pub secret_token: String,
 }
 #[pdk::hl::entrypoint_flex]
 fn init(abi: &dyn pdk::flex_abi::api::FlexAbi) -> Result<(), anyhow::Error> {
@@ -21,10 +20,7 @@ fn init(abi: &dyn pdk::flex_abi::api::FlexAbi) -> Result<(), anyhow::Error> {
                 String::from_utf8_lossy(abi.get_configuration()), err
             )
         })?;
-    if config.external_service.is_some() {
-        let service = config.external_service.unwrap();
-        abi.service_create(service)?;
-    }
+    abi.service_create(config.external_service)?;
     abi.setup()?;
     Ok(())
 }

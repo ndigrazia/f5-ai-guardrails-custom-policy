@@ -27,7 +27,11 @@ async fn hello() -> anyhow::Result<()> {
 
     let policy_config = PolicyConfig::builder()
         .name(POLICY_NAME)
-        .configuration(serde_json::json!({"stringProperty": "desiredValue"}))
+        .configuration(serde_json::json!({
+            "externalService": "backend",
+            "endpointPath": "/anything/echo",
+            "secretToken": "desiredValue"
+        }))
         .build();
 
     let api_config = ApiConfig::builder()
