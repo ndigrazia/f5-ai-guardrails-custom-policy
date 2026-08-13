@@ -1,70 +1,170 @@
-# "f-5-ai-guardrails-custom-policy" Policy
+# F5 AI Guardrails Custom Policy
 
-This policy was created with the Flex Gateway Policy Development Kit (PDK). To find the complete PDK documentation, see [PDK Overview](https://docs.mulesoft.com/pdk/latest/policies-pdk-overview) on the Mulesoft documentation site.
+A custom policy for [MuleSoft Flex Gateway](https://docs.mulesoft.com/gateway/) built with the [Policy Development Kit (PDK)](https://docs.mulesoft.com/pdk/latest/). 
 
+This policy acts as an AI safety and guardrail gateway. It intercepts incoming client requests destined for an LLM/AI model, validates the payload structure, extracts the user prompt, sends it to an external guardrail scanning service, and decides whether to block or allow the request based on the guardrail outcome.
 
-## Make command reference
-This project has a Makefile that includes different goals that assist the developer during the policy development lifecycle.
+---
 
-*For more information about the Makefile, see [Makefile](https://docs.mulesoft.com/pdk/latest/policies-pdk-create-project#makefile).*
+## Features
+
+- **Robust Input Validation**: Ensures client requests follow a valid JSON format, containing a non-empty `messages` array and a `model` specification.
+- **Smart Input Extraction**: Dynamically parses the last user message from the `messages` array to extract the prompt/content.
+- **External Scanning**: Relays the extracted prompt via HTTP to an external security/guardrail scanning service with custom endpoints and authentication.
+- **Enforced Security (Fail-Closed)**: Rejects dangerous requests with a `403 Forbidden` response detailing the safety violations, while gracefully routing compliant prompts upstream with a `202`/`200` status.
+- **Detailed Error Propagation**: Standardizes bad request formats into `400 Bad Request` and integration/runtime errors into `500 Internal Server Error` responses.
+
+---
+
+## Project Structure
+
+The project has been refactored into a clean, modular structure:
+
+```
+.
+├── definition/gcl.yaml                     # Policy schema definition (properties & defaults)
+├── src/
+│   ├── lib.rs                              # Entrypoint & main request filter execution
+│   ├── guardrail_request_handler.rs       # Core logic: payload validation, extraction, & response processing
+│   ├── types.rs                            # Strongly typed structures for guardrail JSON responses
+│   ├── errors.rs                           # Standardized JSON error response formatting (400, 500)
+│   └── generated/
+│       └── config.rs                       # Auto-generated Rust struct representing gcl.yaml properties
+├── tests/
+│   ├── requests.rs                         # Integration tests running with real Flex Gateway in Docker
+│   └── common/mod.rs                       # Shared test helpers
+├── playground/                             # Docker-compose playground setup for manual local testing
+│   ├── docker-compose.yaml
+│   └── config/
+│       ├── api.yaml                        # Configuration for applying the custom policy locally
+│       └── logging.yaml
+├── Cargo.toml                              # Dependency definitions
+└── Makefile                                # Task automation runner
+```
+
+---
+
+## Configuration Properties
+
+Configure the policy inside your API Instance spec or Anypoint Exchange Manager. The schema is declared in `definition/gcl.yaml`:
+
+| Property | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| **`externalService`** | `string` | *Required* | The name of the external HTTP Service (gateway destination address) representing the guardrail scanner. |
+| **`endpointPath`** | `string` | `/backend/v1/scans` | The endpoint path of the guardrail scanning API. |
+| **`secretToken`** | `string` | `my_secret_token_123` | Sensitive authorization/bearer token used to authenticate against the guardrail service. |
+
+---
+
+## Payload and Response Formats
+
+### 1. Expected Client Request (LLM Payload)
+The policy expects a standard chat-completion-like JSON POST request:
+```json
+{
+  "messages": [
+    { "role": "system", "content": "You are a helpful assistant." },
+    { "role": "user", "content": "Hello, how do I build a secure API?" }
+  ],
+  "model": "gpt-4.1"
+}
+```
+
+### 2. Payload Sent to Guardrail Service
+The policy extracts the content from the last user message and sends it to the guardrail endpoint:
+```json
+{
+  "input": "Hello, how do I build a secure API?"
+}
+```
+*HTTP Header sent:* `Authorization: Bearer <secretToken>`
+
+### 3. Expected Guardrail Response
+The scanning service must return a JSON response with an `outcome` indicator:
+- **Allow Outcome:**
+  ```json
+  {
+    "result": {
+      "outcome": "allow",
+      "reason": "Text is safe.",
+      "violations": []
+    }
+  }
+  ```
+- **Flagged Outcome:**
+  ```json
+  {
+    "result": {
+      "outcome": "flagged",
+      "reason": "Contains forbidden patterns.",
+      "violations": ["Matched flagged phrase: 'how to bypass safety'"]
+    }
+  }
+  ```
+
+### 4. Policy Actions & Responses
+- **Allowed:** The proxy-wasm filter returns `Flow::Continue(())` letting the request route to your upstream LLM API.
+- **Blocked (403 Forbidden):** Returns a clean JSON block response:
+  ```json
+  {
+    "outcome": "blocked",
+    "reason": "Request blocked by safety policy.",
+    "violations": ["Matched flagged phrase: 'how to bypass safety'"]
+  }
+  ```
+- **Validation Error (400 Bad Request):** If the input payload format is incorrect:
+  ```json
+  {
+    "outcome": "error",
+    "reason": "Validation error: Missing 'messages' field"
+  }
+  ```
+- **Guardrail Service Error (500 Internal Server Error):** If the external call fails, times out, or returns a malformed response:
+  ```json
+  {
+    "outcome": "error",
+    "reason": "Guardrail error: External request failed: ..."
+  }
+  ```
+
+---
+
+## Make Command Reference
+
+Automate development, compilation, testing, and deployment tasks using the provided `Makefile`.
 
 ### Setup
-The `make setup` goal installs the Policy Development Kit internal dependencies for the rest of the Makefile goals.
+Installs PDK internal dependencies and setup the build environment.
+```bash
+make setup
+```
 
-*For more information about `make setup`, see [Setup the PDK Build environment](https://docs.mulesoft.com/pdk/latest/policies-pdk-create-project#setup-the-pdk-build-environment).*
+### Build Wasm Binary
+Compiles the policy into a WebAssembly binary targets `wasm32-wasip1`. This automatically runs `make build-asset-files` to sync configuration changes made to `definition/gcl.yaml` into Rust source configurations.
+```bash
+make build
+```
 
-### Build asset files
-The `make build-asset-files` goal generates all the policy asset files required to build, execute, and publish the policy. This command also updates the `config.rs` source code file with the latest configurations defined in the policy definition.
+### Run Tests
+Executes the comprehensive suite of unit tests.
+```bash
+make test
+# Or run with cargo directly:
+cargo test --lib
+```
 
-*For more information about creating a policy definition, see [Defining a Policy Schema Definition](https://docs.mulesoft.com/pdk/latest/policies-pdk-create-schema-definition).*
+### Play & Debug (Playground)
+Spins up a local containerized Flex Gateway instance and a sample mock backend. Edit the mock config in `playground/config/api.yaml` to experiment.
+```bash
+make run
+```
 
-*For more information about `make build-asset-files`, see [Compiling Custom Policies](https://docs.mulesoft.com/pdk/latest/policies-pdk-compile-policies).*
+---
 
-### Build
-The `make build` goal compiles the WebAssembly binary of the policy.
-Since the source code must be in sync with the policy definition configurations, this goal runs the `build-asset-files` before compiling.
+## proxy-wasm Runtime Constraints
 
-*For more information about `make build`, see [Compiling Custom Policies](https://docs.mulesoft.com/pdk/latest/policies-pdk-compile-policies).*
-
-### Run
-The `make run` goal provides a simple way to execute the current build of the policy in a Docker containerized environment. In order to run this goal, the `playground/config` directory must contain a set of files required for executing the policy in a Flex Gateway instance:
-- A `registration.yaml` file generated by performing a Flex Gateway registration in Local Mode. If you already have an instance registered in Local mode, you can reuse the registration file you have and copy it in the `playground/config` folder.
-Otherwise, to complete the registration we recommend using the Anypoint Platform:
-    1. Go to `Runtime Manager`
-    2. Navigate to the `Flex Gateway` tab
-    3. Click the `Add Gateway` button
-    4. Select `Docker` as your OS and copy the registration command replacing `--connected=true` to `--connected=false`.
-    5. Paste the command and run it in the `playground/config` directory.
-
-- An `api.yaml` file updated with the desired policy configuration. This file also supports adding other policies to be applied along the one being developed.
-
-The `playground/config` directory can also contain other resource definitions, such as accessory services used by the policy (Eg. a remote authentication service).
-
-*For more information about `make run`, see [Debugging Custom Policies Locally with PDK](https://docs.mulesoft.com/pdk/latest/policies-pdk-debug-local).*
-
-### Test
-The `make test` goal runs unit tests and integration tests. Integration tests are placed in the `tests` directory and are configured with the files placed at the
-`tests/<module-name>/<test-name>` directory.
-
-*For more information about writing integration tests, see [Writing Integration Tests](https://docs.mulesoft.com/pdk/latest/policies-pdk-integration-tests).*
-
-### Publish
-The `make publish` goal publishes the policy asset in Anypoint Exchange, in your configured Organization.
-
-Since the publish goal is intended to publish a policy asset in development, the _assetId_ and name published will explicitly say `dev`, and the versions published will include a timestamp at the end of the version. Eg.
-- groupId: your configured organization id
-- visible name: _{Your policy name} Dev_
-- assetId: _{your-policy-asset-id}-dev_
-- version: _{your-policy-version}-20230618115723_
-
-*For more information about publishing policies, see [Uploading Custom Policies to Exchange](https://docs.mulesoft.com/pdk/latest/policies-pdk-publish-policies).*
-
-### Release
-The `make release` goal also publishes the policy to Anypoint Exchange, but as a ready for production asset. In this case, the groupId, visible name, assetId and version will be the ones defined in the project.
-
-*For more information about releasing policies, see [Uploading Custom Policies to Exchange](https://docs.mulesoft.com/pdk/latest/policies-pdk-publish-policies).*
-
-
-### Policy Examples
-
-The PDK provides provides a set of example policy projects to get started creating policies and using the PDK features. To learn more about these examples see [Custom policy Examples](https://docs.mulesoft.com/pdk/latest/policies-pdk-policy-templates).
+Since this policy compiles to WebAssembly and runs single-threaded inside the proxy-wasm architecture of MuleSoft Flex Gateway, observe the following rules:
+- **No Blocking I/O**: Do not block the executing thread; utilize PDK's non-blocking `async`/`await` HTTP clients.
+- **No Multithreading**: Avoid thread synchronization primitives like `Arc`, `Mutex`, or `RwLock`.
+- **Case-Insensitive Headers**: Always normalize and compare header keys in lowercase.
+- **Fail-Safe Design**: Ensure that external connection issues, timeouts, or unexpected service codes default to blocking (fail-closed) to prevent security holes.

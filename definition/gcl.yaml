@@ -3,8 +3,9 @@ apiVersion: gateway.mulesoft.com/v1alpha1
 kind: Extension
 metadata:
   labels:
-    title: f5-ai-guardrails-custom-policy
+    title: F5 AI Guardrails Policy
     category: Custom
+    description: This extension defines a custom policy for F5 AI Guardrails, allowing users to send requests to an external service for scanning and analysis.
     metadata/interfaceScope: api,resource
 spec:
   extends:
