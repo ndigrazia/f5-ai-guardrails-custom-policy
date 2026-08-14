@@ -29,8 +29,13 @@ spec:
           "security:sensitive"
         ]
       }
+    continueOnF5Failure:
+      type: boolean
+      default: false
+      description: If true, the request will continue even if the F5 AI Guardrails service fails. 
 
   required:
     - externalService
     - endpointPath
     - secretToken
+    - continueOnF5Failure

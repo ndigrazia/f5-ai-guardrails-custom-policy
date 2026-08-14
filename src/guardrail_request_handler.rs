@@ -87,7 +87,7 @@ pub async fn validate_and_extract_input(headers_state: RequestHeadersState) -> R
     Ok(input_text)
 }
 
-pub fn process_guardrail_response(response: Result<HttpClientResponse, HttpClientError>) -> Flow<()> {
+pub fn process_guardrail_response(response: Result<HttpClientResponse, HttpClientError>, continue_on_f_5_failure: bool) -> Flow<()> {
     match response {
         Ok(res) => {
             logger::info!("External request succeeded with status: {}", res.status_code());
@@ -122,27 +122,52 @@ pub fn process_guardrail_response(response: Result<HttpClientResponse, HttpClien
                                 }
                                 unexpected => {
                                     logger::error!("Guardrail returned unexpected outcome value: '{}'", unexpected);
-                                    error_response(&format!("Unexpected outcome value: '{unexpected}'"))
+                                    if continue_on_f_5_failure {
+                                        logger::info!("Error ignored: continue_on_f_5_failure is true.");
+                                        Flow::Continue(())
+                                    } else {
+                                        error_response(&format!("Unexpected outcome value: '{unexpected}'"))
+                                    }
                                 }
                             }
                         } else {
                             logger::error!("Guardrail response missing outcome field.");
-                            error_response("Missing outcome field")
+                            if continue_on_f_5_failure {
+                                logger::info!("Error ignored: continue_on_f_5_failure is true.");
+                                Flow::Continue(())
+                            } else {
+                                error_response("Missing outcome field")
+                            }
                         }
                     } else {
                         logger::error!("Guardrail response missing result field.");
-                        error_response("Missing result field")
+                        if continue_on_f_5_failure {
+                            logger::info!("Error ignored: continue_on_f_5_failure is true.");
+                            Flow::Continue(())
+                        } else {
+                            error_response("Missing result field")
+                        }
                     }
                 }
                 Err(err) => {
                     logger::error!("Failed to parse guardrail response as JSON: {:?}", err);
-                    error_response(&format!("Malformed service response: {err:?}"))
+                    if continue_on_f_5_failure {
+                        logger::info!("Error ignored: continue_on_f_5_failure is true.");
+                        Flow::Continue(())
+                    } else {
+                        error_response(&format!("Malformed service response: {err:?}"))
+                    }
                 }
             }
         }
         Err(err) => {
             logger::error!("External request to guardrail service failed: {:?}", err);
-            error_response(&format!("External request failed: {err:?}"))
+            if continue_on_f_5_failure {
+                logger::info!("Error ignored: continue_on_f_5_failure is true.");
+                Flow::Continue(())
+            } else {
+                error_response(&format!("External request failed: {err:?}"))
+            }
         }
     }
 }

@@ -1,6 +1,8 @@
 use serde::Deserialize;
 #[derive(Deserialize, Clone, Debug)]
 pub struct Config {
+    #[serde(alias = "continueOnF5Failure")]
+    pub continue_on_f_5_failure: bool,
     #[serde(alias = "endpointPath")]
     pub endpoint_path: String,
     #[serde(

@@ -44,7 +44,7 @@ async fn request_filter(request_state: RequestState, config: &Config, client: &H
         .post()
         .await;
 
-    process_guardrail_response(response)
+    process_guardrail_response(response, config.continue_on_f_5_failure)
 }
 
 // This filter is a placeholder for any response processing logic you may want to implement.
@@ -193,7 +193,8 @@ mod test {
             .with_config(json!({
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
-                "secretToken": "test_token_456"
+                "secretToken": "test_token_456",
+                "continueOnF5Failure": false
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -215,7 +216,8 @@ mod test {
             .with_config(json!({
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
-                "secretToken": "test_token_456"
+                "secretToken": "test_token_456",
+                "continueOnF5Failure": false
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -239,7 +241,8 @@ mod test {
             .with_config(json!({
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
-                "secretToken": "test_token_456"
+                "secretToken": "test_token_456",
+                "continueOnF5Failure": false
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -268,7 +271,8 @@ mod test {
             .with_config(json!({
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
-                "secretToken": "test_token_456"
+                "secretToken": "test_token_456",
+                "continueOnF5Failure": false
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -294,7 +298,8 @@ mod test {
             .with_config(json!({
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
-                "secretToken": "test_token_456"
+                "secretToken": "test_token_456",
+                "continueOnF5Failure": false
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -318,7 +323,8 @@ mod test {
             .with_config(json!({
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
-                "secretToken": "test_token_456"
+                "secretToken": "test_token_456",
+                "continueOnF5Failure": false
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -342,7 +348,8 @@ mod test {
             .with_config(json!({
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
-                "secretToken": "test_token_456"
+                "secretToken": "test_token_456",
+                "continueOnF5Failure": false
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -366,7 +373,8 @@ mod test {
             .with_config(json!({
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
-                "secretToken": "test_token_456"
+                "secretToken": "test_token_456",
+                "continueOnF5Failure": false
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -381,6 +389,48 @@ mod test {
         assert!(parsed_body["reason"].as_str().unwrap().contains("Guardrail error: Malformed service response"));
     }
 
+    #[test]
+    fn test_request_filter_malformed_response_continue_on_failure() {
+        let backend = Rc::new(TraceBackend::new(custom_backend));
+        let mock_service = Rc::new(TraceBackend::new(mock_malformed_backend));
+
+        let mut tester = UnitTestBuilder::default()
+            .with_config(json!({
+                "externalService": "http://http.mock",
+                "endpointPath": "/api",
+                "secretToken": "test_token_456",
+                "continueOnF5Failure": true
+            }).to_string())
+            .with_backend(Rc::clone(&backend))
+            .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
+            .with_entrypoint(super::configure);
+
+        let response = tester.request(valid_post_request("test"));
+        assert_eq!(response.status_code(), 202);
+    }
+
+    #[test]
+    fn test_request_filter_connection_error_continue_on_failure() {
+        let backend = Rc::new(TraceBackend::new(custom_backend));
+        let mock_service = Rc::new(TraceBackend::new(|_req| {
+            UnitHttpResponse::new(500)
+        }));
+
+        let mut tester = UnitTestBuilder::default()
+            .with_config(json!({
+                "externalService": "http://http.mock",
+                "endpointPath": "/api",
+                "secretToken": "test_token_456",
+                "continueOnF5Failure": true
+            }).to_string())
+            .with_backend(Rc::clone(&backend))
+            .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
+            .with_entrypoint(super::configure);
+
+        let response = tester.request(valid_post_request("test"));
+        assert_eq!(response.status_code(), 202);
+    }
+
     // --- Validation Unit Tests ---
 
     fn run_validation_test(req: UnitHttpRequest, expected_reason: &str) {
@@ -391,7 +441,8 @@ mod test {
             .with_config(json!({
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
-                "secretToken": "test_token_456"
+                "secretToken": "test_token_456",
+                "continueOnF5Failure": false
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -522,7 +573,8 @@ mod test {
             .with_config(json!({
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
-                "secretToken": "test_token_456"
+                "secretToken": "test_token_456",
+                "continueOnF5Failure": false
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
