@@ -12,6 +12,9 @@ This policy acts as an AI safety and guardrail gateway. It intercepts incoming c
 - **Smart Input Extraction**: Dynamically parses the last user message from the `messages` array to extract the prompt/content.
 - **External Scanning**: Relays the extracted prompt via HTTP to an external security/guardrail scanning service with custom endpoints and authentication.
 - **Enforced Security (Fail-Closed)**: Rejects dangerous requests with a `403 Forbidden` response detailing the safety violations, while gracefully routing compliant prompts upstream with a `202`/`200` status.
+- **Response Logging**: Safely intercepts and extracts response bodies asynchronously to log target backend responses.
+- **Bodyless Response Guard**: Throws a `500 Internal Server Error` exception if the target downstream response does not contain a body, preventing bypasses or communication issues.
+- **Configurable Fail-Safe Mode**: Exposes a customizable fallback option (`continueOnF5Failure`) that lets operators select between secure fail-closed (default) and robust fail-open behaviors during scanning service outages.
 - **Detailed Error Propagation**: Standardizes bad request formats into `400 Bad Request` and integration/runtime errors into `500 Internal Server Error` responses.
 
 ---
@@ -25,7 +28,8 @@ The project has been refactored into a clean, modular structure:
 ├── definition/gcl.yaml                     # Policy schema definition (properties & defaults)
 ├── src/
 │   ├── lib.rs                              # Entrypoint & main request filter execution
-│   ├── guardrail_request_handler.rs       # Core logic: payload validation, extraction, & response processing
+│   ├── guardrail_request_handler.rs       # Request-side validation and scanning logic
+│   ├── guardrail_response_handler.rs      # Response-side processing and body extraction logging
 │   ├── types.rs                            # Strongly typed structures for guardrail JSON responses
 │   ├── errors.rs                           # Standardized JSON error response formatting (400, 500)
 │   └── generated/
@@ -53,6 +57,7 @@ Configure the policy inside your API Instance spec or Anypoint Exchange Manager.
 | **`externalService`** | `string` | *Required* | The name of the external HTTP Service (gateway destination address) representing the guardrail scanner. |
 | **`endpointPath`** | `string` | `/backend/v1/scans` | The endpoint path of the guardrail scanning API. |
 | **`secretToken`** | `string` | `my_secret_token_123` | Sensitive authorization/bearer token used to authenticate against the guardrail service. |
+| **`continueOnF5Failure`** | `boolean` | `false` (*Required*) | If `true`, request will fail-open and proceed upstream even if the external guardrail scanning service is unreachable, timed out, or returns an error. If `false`, rejects the request with a `500` error response (fail-closed). |
 
 ---
 
