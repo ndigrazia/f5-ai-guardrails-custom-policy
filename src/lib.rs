@@ -48,18 +48,23 @@ async fn request_filter(request_state: RequestState, config: &Config, client: &H
 }
 
 // This filter is a placeholder for any response processing logic you may want to implement.
-async fn response_filter(response_state: ResponseState, _config: &Config, _client: &HttpClient, request_data: RequestData<()>) {
+async fn response_filter(response_state: ResponseState, config: &Config, _client: &HttpClient, request_data: RequestData<()>) {
+    if !config.evaluate_response_with_f_5 {
+        pdk::logger::info!("Skipping response evaluation as per configuration.");    
+        return;
+    }
     let headers_state = response_state.into_headers_state().await;
     if !headers_state.contains_body() {
         send_missing_body_error(headers_state);
         return;
     }
 
-    let body_state = headers_state.into_body_state().await;
+    let body_state: ResponseBodyState = headers_state.into_body_state().await;
     let body_bytes = body_state.handler().body();
 
     pdk::logger::info!("Response body: {}", String::from_utf8_lossy(&body_bytes));
    
+    // Only process the response body if the request was allowed to continue.
     if let RequestData::Continue(_) = request_data {
         process_response_body(&body_bytes);
     } else {
@@ -194,7 +199,8 @@ mod test {
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
                 "secretToken": "test_token_456",
-                "continueOnF5Failure": false
+                "continueOnF5Failure": false,
+                "evaluateResponseWithF5": true
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -217,7 +223,8 @@ mod test {
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
                 "secretToken": "test_token_456",
-                "continueOnF5Failure": false
+                "continueOnF5Failure": false,
+                "evaluateResponseWithF5": true
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -233,6 +240,32 @@ mod test {
     }
 
     #[test]
+    fn test_response_filter_evaluate_false() {
+        // Return 200 with no body
+        let backend = Rc::new(TraceBackend::new(|_req| {
+            UnitHttpResponse::new(200)
+        }));
+        let mock_service = Rc::new(TraceBackend::new(mock_allow_backend));
+
+        let mut tester = UnitTestBuilder::default()
+            .with_config(json!({
+                "externalService": "http://http.mock",
+                "endpointPath": "/api",
+                "secretToken": "test_token_456",
+                "continueOnF5Failure": false,
+                "evaluateResponseWithF5": false
+            }).to_string())
+            .with_backend(Rc::clone(&backend))
+            .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
+            .with_entrypoint(super::configure);
+
+        let response = tester.request(valid_post_request("Hello"));
+        // Since evaluateResponseWithF5 is false, it does not process the response and bypasses the no-body exception,
+        // letting the 200 response pass upstream unchanged!
+        assert_eq!(response.status_code(), 200);
+    }
+
+    #[test]
     fn test_request_filter_flagged_multiple() {
         let backend = Rc::new(TraceBackend::new(custom_backend));
         let mock_service = Rc::new(TraceBackend::new(mock_flagged_multiple_violations_backend));
@@ -242,7 +275,8 @@ mod test {
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
                 "secretToken": "test_token_456",
-                "continueOnF5Failure": false
+                "continueOnF5Failure": false,
+                "evaluateResponseWithF5": true
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -272,7 +306,8 @@ mod test {
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
                 "secretToken": "test_token_456",
-                "continueOnF5Failure": false
+                "continueOnF5Failure": false,
+                "evaluateResponseWithF5": true
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -299,7 +334,8 @@ mod test {
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
                 "secretToken": "test_token_456",
-                "continueOnF5Failure": false
+                "continueOnF5Failure": false,
+                "evaluateResponseWithF5": true
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -324,7 +360,8 @@ mod test {
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
                 "secretToken": "test_token_456",
-                "continueOnF5Failure": false
+                "continueOnF5Failure": false,
+                "evaluateResponseWithF5": true
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -349,7 +386,8 @@ mod test {
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
                 "secretToken": "test_token_456",
-                "continueOnF5Failure": false
+                "continueOnF5Failure": false,
+                "evaluateResponseWithF5": true
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -374,7 +412,8 @@ mod test {
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
                 "secretToken": "test_token_456",
-                "continueOnF5Failure": false
+                "continueOnF5Failure": false,
+                "evaluateResponseWithF5": true
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -399,7 +438,8 @@ mod test {
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
                 "secretToken": "test_token_456",
-                "continueOnF5Failure": true
+                "continueOnF5Failure": true,
+                "evaluateResponseWithF5": true
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -421,7 +461,8 @@ mod test {
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
                 "secretToken": "test_token_456",
-                "continueOnF5Failure": true
+                "continueOnF5Failure": true,
+                "evaluateResponseWithF5": true
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -442,7 +483,8 @@ mod test {
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
                 "secretToken": "test_token_456",
-                "continueOnF5Failure": false
+                "continueOnF5Failure": false,
+                "evaluateResponseWithF5": true
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
@@ -574,7 +616,8 @@ mod test {
                 "externalService": "http://http.mock",
                 "endpointPath": "/api",
                 "secretToken": "test_token_456",
-                "continueOnF5Failure": false
+                "continueOnF5Failure": false,
+                "evaluateResponseWithF5": true
             }).to_string())
             .with_backend(Rc::clone(&backend))
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))

@@ -5,6 +5,8 @@ pub struct Config {
     pub continue_on_f_5_failure: bool,
     #[serde(alias = "endpointPath")]
     pub endpoint_path: String,
+    #[serde(alias = "evaluateResponseWithF5")]
+    pub evaluate_response_with_f_5: bool,
     #[serde(
         alias = "externalService",
         deserialize_with = "pdk::serde::deserialize_service"

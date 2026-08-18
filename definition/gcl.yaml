@@ -33,9 +33,14 @@ spec:
       type: boolean
       default: false
       description: If true, the request will continue even if the F5 AI Guardrails service fails. 
+    evaluateResponseWithF5:
+      type: boolean
+      default: true
+      description: If true, the response will be evaluated using the F5 AI Guardrails service.
 
   required:
     - externalService
     - endpointPath
     - secretToken
     - continueOnF5Failure
+    - evaluateResponseWithF5

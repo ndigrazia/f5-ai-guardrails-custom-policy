@@ -58,6 +58,7 @@ Configure the policy inside your API Instance spec or Anypoint Exchange Manager.
 | **`endpointPath`** | `string` | `/backend/v1/scans` | The endpoint path of the guardrail scanning API. |
 | **`secretToken`** | `string` | `my_secret_token_123` | Sensitive authorization/bearer token used to authenticate against the guardrail service. |
 | **`continueOnF5Failure`** | `boolean` | `false` (*Required*) | If `true`, request will fail-open and proceed upstream even if the external guardrail scanning service is unreachable, timed out, or returns an error. If `false`, rejects the request with a `500` error response (fail-closed). |
+| **`evaluateResponseWithF5`** | `boolean` | `true` (*Required*) | If `true`, the target downstream response will be evaluated using the F5 AI Guardrails service. If `false`, response body evaluation and exceptions are bypassed. |
 
 ---
 
