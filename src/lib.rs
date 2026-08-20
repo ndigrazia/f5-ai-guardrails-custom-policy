@@ -1,18 +1,22 @@
 // Copyright 2026 Salesforce, Inc. All rights reserved.
-mod errors;
+mod guardrail_request_errors;
 mod generated;
 mod types;
 mod guardrail_request_handler;
-mod response_extractor;
+mod guardrail_response_handler;
+mod guardrail_sender;
+mod guardrail_response_errors;
 
 use anyhow::{anyhow, Result};
 
 use pdk::hl::*;
 
 use crate::generated::config::Config;
-use crate::errors::{validation_error};
+use crate::guardrail_request_errors::{validation_error};
+use crate::guardrail_response_errors::{send_response_guardrail_error, send_response_validate_content_error};
 use crate::guardrail_request_handler::{validate_and_extract_input, process_guardrail_response};
-use crate::response_extractor::validate_and_extract_content;
+use crate::guardrail_response_handler::{validate_and_extract_content, handle_guardrail_response};
+use crate::guardrail_sender::send_guardrail_request;
 
 // This filter shows how to log a specific request header.
 // You can extend the function and use the configurations exposed in config.rs file
@@ -26,29 +30,13 @@ async fn request_filter(request_state: RequestState, config: &Config, client: &H
         }
     };
     
-    let auth_header = format!("Bearer {}", config.secret_token);
-    
-    let guardrail_request_body = serde_json::json!({
-        "input": input_text
-    });
-    let guardrail_body_bytes = guardrail_request_body.to_string();
-
-    let response = client
-        .request(&config.external_service)
-        .path(&config.endpoint_path)
-        .headers(vec![
-            ("Content-Type", "application/json"),
-            ("Authorization", &auth_header),
-        ])
-        .body(guardrail_body_bytes.as_bytes())
-        .post()
-        .await;
+    let response = send_guardrail_request(client, config, &input_text).await;
 
     process_guardrail_response(response, config.continue_on_f_5_failure)
 }
 
 // This filter is a placeholder for any response processing logic you may want to implement.
-async fn response_filter(response_state: ResponseState, config: &Config, _client: &HttpClient, request_data: RequestData<()>) {
+async fn response_filter(response_state: ResponseState, config: &Config, client: &HttpClient, request_data: RequestData<()>) {
     // If evaluate_response_with_f_5 is false, we skip processing the response and let it pass through unchanged.
     if !config.evaluate_response_with_f_5 {
         return;
@@ -58,29 +46,63 @@ async fn response_filter(response_state: ResponseState, config: &Config, _client
         return;
     }
     
-    let state = response_state.into_headers_body_state().await;
+    let state: ResponseHeadersBodyState = response_state.into_headers_body_state().await;
 
     let body = state.handler().body();
 
     let (is_valid, content, error_msg) = validate_and_extract_content(&body);
     
     if is_valid {
-        pdk::logger::info!("Extracted content: {:?}", content);
+        let content_str = content.clone().unwrap_or_default();
+        pdk::logger::info!("Extracted content from response: {}", content_str);
+            
+        let response = send_guardrail_request(client, config, &content_str).await;
+        
+        let (is_allowed, is_flagged, error_message, violations) = handle_guardrail_response(response, config.continue_on_f_5_failure);
 
-        state.handler().set_header("x-check_passed", "true");
-        state.handler().set_header(":status", "200");
+        if !is_allowed {
+            let handler: &dyn HeadersBodyHandler = state.handler();
+            send_response_guardrail_error(handler, is_flagged, error_message, violations);
+            //if is_flagged {
+            //    state.handler().set_header("Content-Type", "application/json");
+            //    state.handler().set_header(":status", "403");
+//
+            //    let error_body = serde_json::json!({
+            //        "outcome": "blocked",
+            //        "reason": error_message.unwrap_or_else(|| "Input text violated safety policies.".to_string()),
+            //        "violations": violations.unwrap_or_default()
+            //    });
+            //    let error_bytes = error_body.to_string().into_bytes();
+            //    state.handler().set_header("Content-Length", &error_bytes.len().to_string());
+            //    let _ = state.handler().set_body(&error_bytes);
+            //} else {
+            //    state.handler().set_header("Content-Type", "application/json");
+            //    state.handler().set_header(":status", "500");
+//
+            //    let error_body = serde_json::json!({
+            //        "outcome": "error",
+            //        "reason": format!("Guardrail error: {}", error_message.unwrap_or_else(|| "Unknown error".to_string()))
+            //    });
+            //    let error_bytes = error_body.to_string().into_bytes();
+            //    state.handler().set_header("Content-Length", &error_bytes.len().to_string());
+            //    let _ = state.handler().set_body(&error_bytes);
+            //}
+        } 
+
     } else {
-        state.handler().set_header("x-check_passed", "false");
-        state.handler().set_header("Content-Type", "application/json");
-        state.handler().set_header(":status", "500");
-
-        let error_body = serde_json::json!({
-            "outcome": "error",
-            "reason": format!("Guardrail error: {}", error_msg.unwrap_or_else(|| "Unknown error".to_string()))
-        });
-        let error_bytes = error_body.to_string().into_bytes();
-        state.handler().set_header("Content-Length", &error_bytes.len().to_string());
-        let _ = state.handler().set_body(&error_bytes);
+        //state.handler().set_header("Content-Type", "application/json");
+        //state.handler().set_header(":status", "500");
+//
+        //let error_body = serde_json::json!({
+        //    "outcome": "error",
+        //    "reason": format!("Guardrail error: {}", error_msg.unwrap_or_else(|| "Unknown error".to_string()))
+        //});
+        //let error_bytes = error_body.to_string().into_bytes();
+        //state.handler().set_header("Content-Length", &error_bytes.len().to_string());
+        //let _ = state.handler().set_body(&error_bytes);
+//
+        let handler: &dyn HeadersBodyHandler = state.handler();
+        send_response_validate_content_error(handler, error_msg);
     }
 }
 
@@ -530,13 +552,15 @@ mod test {
 
         let response = tester.request(valid_post_request("Hello"));
         assert_eq!(response.status_code(), 500);
-        assert_eq!(response.header("x-check_passed").unwrap(), "false");
+        if let Some(h) = response.header("x-check_passed") {
+            assert_eq!(h, "false");
+        }
         assert!(response.body().is_empty());
     }
 
     #[test]
     fn test_extract_content_success() {
-        use crate::response_extractor::validate_and_extract_content;
+        use crate::guardrail_response_handler::validate_and_extract_content;
         let body = json!({
             "choices": [
                 {
@@ -556,7 +580,7 @@ mod test {
 
     #[test]
     fn test_extract_content_stringify_non_string() {
-        use crate::response_extractor::validate_and_extract_content;
+        use crate::guardrail_response_handler::validate_and_extract_content;
         let body = json!({
             "choices": [
                 {
@@ -576,7 +600,7 @@ mod test {
 
     #[test]
     fn test_extract_content_failures() {
-        use crate::response_extractor::validate_and_extract_content;
+        use crate::guardrail_response_handler::validate_and_extract_content;
         
         // Empty body
         let (is_valid, extracted, error_msg) = validate_and_extract_content(b"");
@@ -631,6 +655,22 @@ mod test {
         assert!(!is_valid);
         assert_eq!(extracted, None);
         assert_eq!(error_msg, Some("Missing 'content' field".to_string()));
+
+        // Empty content string in message
+        let body = json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "role": "assistant"
+                    }
+                }
+            ]
+        }).to_string().into_bytes();
+        let (is_valid, extracted, error_msg) = validate_and_extract_content(&body);
+        assert!(!is_valid);
+        assert_eq!(extracted, None);
+        assert_eq!(error_msg, Some("Content is an empty string".to_string()));
     }
 
 }

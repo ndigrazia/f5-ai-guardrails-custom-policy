@@ -4,7 +4,7 @@ use anyhow::Result;
 use pdk::hl::*;
 use pdk::logger;
 
-use crate::errors::error_response;
+use crate::guardrail_request_errors::error_response;
 use crate::types::GuardrailResponse;
 
 pub async fn validate_and_extract_input(headers_state: RequestHeadersState) -> Result<String, String> {
