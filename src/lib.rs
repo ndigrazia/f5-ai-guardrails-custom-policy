@@ -63,44 +63,9 @@ async fn response_filter(response_state: ResponseState, config: &Config, client:
         if !is_allowed {
             let handler: &dyn HeadersBodyHandler = state.handler();
             send_response_guardrail_error(handler, is_flagged, error_message, violations);
-            //if is_flagged {
-            //    state.handler().set_header("Content-Type", "application/json");
-            //    state.handler().set_header(":status", "403");
-//
-            //    let error_body = serde_json::json!({
-            //        "outcome": "blocked",
-            //        "reason": error_message.unwrap_or_else(|| "Input text violated safety policies.".to_string()),
-            //        "violations": violations.unwrap_or_default()
-            //    });
-            //    let error_bytes = error_body.to_string().into_bytes();
-            //    state.handler().set_header("Content-Length", &error_bytes.len().to_string());
-            //    let _ = state.handler().set_body(&error_bytes);
-            //} else {
-            //    state.handler().set_header("Content-Type", "application/json");
-            //    state.handler().set_header(":status", "500");
-//
-            //    let error_body = serde_json::json!({
-            //        "outcome": "error",
-            //        "reason": format!("Guardrail error: {}", error_message.unwrap_or_else(|| "Unknown error".to_string()))
-            //    });
-            //    let error_bytes = error_body.to_string().into_bytes();
-            //    state.handler().set_header("Content-Length", &error_bytes.len().to_string());
-            //    let _ = state.handler().set_body(&error_bytes);
-            //}
         } 
 
     } else {
-        //state.handler().set_header("Content-Type", "application/json");
-        //state.handler().set_header(":status", "500");
-//
-        //let error_body = serde_json::json!({
-        //    "outcome": "error",
-        //    "reason": format!("Guardrail error: {}", error_msg.unwrap_or_else(|| "Unknown error".to_string()))
-        //});
-        //let error_bytes = error_body.to_string().into_bytes();
-        //state.handler().set_header("Content-Length", &error_bytes.len().to_string());
-        //let _ = state.handler().set_body(&error_bytes);
-//
         let handler: &dyn HeadersBodyHandler = state.handler();
         send_response_validate_content_error(handler, error_msg);
     }
