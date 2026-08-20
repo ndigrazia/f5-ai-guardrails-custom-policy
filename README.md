@@ -29,9 +29,11 @@ The project has been refactored into a clean, modular structure:
 ├── src/
 │   ├── lib.rs                              # Entrypoint & main request filter execution
 │   ├── guardrail_request_handler.rs       # Request-side validation and scanning logic
-│   ├── response_extractor.rs              # Response validation and content extraction logic
+│   ├── guardrail_response_handler.rs      # Response-side validation and extraction logic
+│   ├── guardrail_sender.rs                # Outbound guardrail scanning request client sender
+│   ├── guardrail_request_errors.rs        # Standardized request JSON error formatting (400, 500)
+│   ├── guardrail_response_errors.rs       # Standardized response JSON error formatting (403, 500)
 │   ├── types.rs                            # Strongly typed structures for guardrail JSON responses
-│   ├── errors.rs                           # Standardized JSON error response formatting (400, 500)
 │   └── generated/
 │       └── config.rs                       # Auto-generated Rust struct representing gcl.yaml properties
 ├── tests/
