@@ -29,7 +29,7 @@ The project has been refactored into a clean, modular structure:
 ├── src/
 │   ├── lib.rs                              # Entrypoint & main request filter execution
 │   ├── guardrail_request_handler.rs       # Request-side validation and scanning logic
-│   ├── guardrail_response_handler.rs      # Response-side processing and body extraction logging
+│   ├── response_extractor.rs              # Response validation and content extraction logic
 │   ├── types.rs                            # Strongly typed structures for guardrail JSON responses
 │   ├── errors.rs                           # Standardized JSON error response formatting (400, 500)
 │   └── generated/

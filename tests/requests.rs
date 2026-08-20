@@ -89,7 +89,18 @@ async fn hello() -> anyhow::Result<()> {
     // Mock a /hello request
     mock_server.mock_async(|when, then| {
         when.path_contains("/hello");
-        then.status(202).body("World!");
+        then.status(202)
+            .header("Content-Type", "application/json")
+            .body(r#"{
+                "choices": [
+                    {
+                        "message": {
+                            "content": "Passed",
+                            "role": "assistant"
+                        }
+                    }
+                ]
+            }"#);
     }).await;
 
     // Perform an actual request sending the expected request structure as a JSON body
@@ -109,7 +120,8 @@ async fn hello() -> anyhow::Result<()> {
         .await?;
 
     // Assert on the response
-    assert_eq!(response.status(), 202);
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers().get("x-check_passed").unwrap().to_str().unwrap(), "true");
 
     Ok(())
 }

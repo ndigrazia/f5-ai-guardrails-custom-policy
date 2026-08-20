@@ -14,7 +14,7 @@ definition_asset_id = "f-5-ai-guardrails-custom-policy"
 implementation_asset_id = "f-5-ai-guardrails-custom-policy-flex"
 
 [dependencies]
-pdk = { version = "1.9.0" }
+pdk = { version = "1.9.0", features = ["enable_stop_iteration"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 anyhow = "1.0"

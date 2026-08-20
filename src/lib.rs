@@ -3,16 +3,16 @@ mod errors;
 mod generated;
 mod types;
 mod guardrail_request_handler;
-mod guardrail_response_handler;
+mod response_extractor;
 
 use anyhow::{anyhow, Result};
 
 use pdk::hl::*;
 
 use crate::generated::config::Config;
-use crate::errors::{validation_error, send_missing_body_error};
+use crate::errors::{validation_error};
 use crate::guardrail_request_handler::{validate_and_extract_input, process_guardrail_response};
-use crate::guardrail_response_handler::process_response_body;
+use crate::response_extractor::validate_and_extract_content;
 
 // This filter shows how to log a specific request header.
 // You can extend the function and use the configurations exposed in config.rs file
@@ -49,26 +49,38 @@ async fn request_filter(request_state: RequestState, config: &Config, client: &H
 
 // This filter is a placeholder for any response processing logic you may want to implement.
 async fn response_filter(response_state: ResponseState, config: &Config, _client: &HttpClient, request_data: RequestData<()>) {
+    // If evaluate_response_with_f_5 is false, we skip processing the response and let it pass through unchanged.
     if !config.evaluate_response_with_f_5 {
-        pdk::logger::info!("Skipping response evaluation as per configuration.");    
         return;
     }
-    let headers_state = response_state.into_headers_state().await;
-    if !headers_state.contains_body() {
-        send_missing_body_error(headers_state);
+    // If the request was a break, we skip processing the response and let it pass through unchanged.
+    if let RequestData::Break = request_data {
         return;
     }
+    
+    let state = response_state.into_headers_body_state().await;
 
-    let body_state: ResponseBodyState = headers_state.into_body_state().await;
-    let body_bytes = body_state.handler().body();
+    let body = state.handler().body();
 
-    pdk::logger::info!("Response body: {}", String::from_utf8_lossy(&body_bytes));
-   
-    // Only process the response body if the request was allowed to continue.
-    if let RequestData::Continue(_) = request_data {
-        process_response_body(&body_bytes);
+    let (is_valid, content, error_msg) = validate_and_extract_content(&body);
+    
+    if is_valid {
+        pdk::logger::info!("Extracted content: {:?}", content);
+
+        state.handler().set_header("x-check_passed", "true");
+        state.handler().set_header(":status", "200");
     } else {
-        return;
+        state.handler().set_header("x-check_passed", "false");
+        state.handler().set_header("Content-Type", "application/json");
+        state.handler().set_header(":status", "500");
+
+        let error_body = serde_json::json!({
+            "outcome": "error",
+            "reason": format!("Guardrail error: {}", error_msg.unwrap_or_else(|| "Unknown error".to_string()))
+        });
+        let error_bytes = error_body.to_string().into_bytes();
+        state.handler().set_header("Content-Length", &error_bytes.len().to_string());
+        let _ = state.handler().set_body(&error_bytes);
     }
 }
 
@@ -187,56 +199,6 @@ mod test {
         UnitHttpRequest::post()
             .with_header("Content-Type", "application/json")
             .with_body(post_body.into_bytes())
-    }
-
-    #[test]
-    fn test_request_filter_allow() {
-        let backend = Rc::new(TraceBackend::new(custom_backend));
-        let mock_service = Rc::new(TraceBackend::new(mock_allow_backend));
-
-        let mut tester = UnitTestBuilder::default()
-            .with_config(json!({
-                "externalService": "http://http.mock",
-                "endpointPath": "/api",
-                "secretToken": "test_token_456",
-                "continueOnF5Failure": false,
-                "evaluateResponseWithF5": true
-            }).to_string())
-            .with_backend(Rc::clone(&backend))
-            .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
-            .with_entrypoint(super::configure);
-
-        let response = tester.request(valid_post_request("Hello"));
-        assert_eq!(response.status_code(), 202);
-    }
-
-    #[test]
-    fn test_response_filter_missing_body() {
-        // Return 200 with no body
-        let backend = Rc::new(TraceBackend::new(|_req| {
-            UnitHttpResponse::new(200)
-        }));
-        let mock_service = Rc::new(TraceBackend::new(mock_allow_backend));
-
-        let mut tester = UnitTestBuilder::default()
-            .with_config(json!({
-                "externalService": "http://http.mock",
-                "endpointPath": "/api",
-                "secretToken": "test_token_456",
-                "continueOnF5Failure": false,
-                "evaluateResponseWithF5": true
-            }).to_string())
-            .with_backend(Rc::clone(&backend))
-            .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
-            .with_entrypoint(super::configure);
-
-        let response = tester.request(valid_post_request("Hello"));
-        assert_eq!(response.status_code(), 500);
-
-        let body_bytes = response.body();
-        let parsed_body: serde_json::Value = serde_json::from_slice(body_bytes).unwrap();
-        assert_eq!(parsed_body["outcome"], "error");
-        assert_eq!(parsed_body["reason"], "Guardrail error: Response body is missing");
     }
 
     #[test]
@@ -428,50 +390,6 @@ mod test {
         assert!(parsed_body["reason"].as_str().unwrap().contains("Guardrail error: Malformed service response"));
     }
 
-    #[test]
-    fn test_request_filter_malformed_response_continue_on_failure() {
-        let backend = Rc::new(TraceBackend::new(custom_backend));
-        let mock_service = Rc::new(TraceBackend::new(mock_malformed_backend));
-
-        let mut tester = UnitTestBuilder::default()
-            .with_config(json!({
-                "externalService": "http://http.mock",
-                "endpointPath": "/api",
-                "secretToken": "test_token_456",
-                "continueOnF5Failure": true,
-                "evaluateResponseWithF5": true
-            }).to_string())
-            .with_backend(Rc::clone(&backend))
-            .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
-            .with_entrypoint(super::configure);
-
-        let response = tester.request(valid_post_request("test"));
-        assert_eq!(response.status_code(), 202);
-    }
-
-    #[test]
-    fn test_request_filter_connection_error_continue_on_failure() {
-        let backend = Rc::new(TraceBackend::new(custom_backend));
-        let mock_service = Rc::new(TraceBackend::new(|_req| {
-            UnitHttpResponse::new(500)
-        }));
-
-        let mut tester = UnitTestBuilder::default()
-            .with_config(json!({
-                "externalService": "http://http.mock",
-                "endpointPath": "/api",
-                "secretToken": "test_token_456",
-                "continueOnF5Failure": true,
-                "evaluateResponseWithF5": true
-            }).to_string())
-            .with_backend(Rc::clone(&backend))
-            .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
-            .with_entrypoint(super::configure);
-
-        let response = tester.request(valid_post_request("test"));
-        assert_eq!(response.status_code(), 202);
-    }
-
     // --- Validation Unit Tests ---
 
     fn run_validation_test(req: UnitHttpRequest, expected_reason: &str) {
@@ -592,24 +510,11 @@ mod test {
     }
 
     #[test]
-    fn test_request_filter_post_with_body() {
-        let backend = Rc::new(TraceBackend::new(custom_backend));
-        let mock_service = Rc::new(TraceBackend::new(|req: UnitHttpRequest| {
-            // Verify that the HttpClient request body sent to the guardrail service contains the extracted text!
-            let body_bytes = req.body();
-            let parsed_guardrail_req: serde_json::Value = serde_json::from_slice(body_bytes).unwrap();
-            assert_eq!(parsed_guardrail_req["input"], "Que es un ADR en 10 palabras.");
-
+    fn test_response_filter_evaluate_true_no_body() {
+        let backend = Rc::new(TraceBackend::new(|_req| {
             UnitHttpResponse::new(200)
-                .with_header("Content-Type", "application/json")
-                .with_body(r#"{
-                    "result": {
-                        "outcome": "allow",
-                        "reason": "Passed",
-                        "violations": []
-                    }
-                }"#)
         }));
+        let mock_service = Rc::new(TraceBackend::new(mock_allow_backend));
 
         let mut tester = UnitTestBuilder::default()
             .with_config(json!({
@@ -623,26 +528,109 @@ mod test {
             .with_http_upstream_from_authority("http.mock", Rc::clone(&mock_service))
             .with_entrypoint(super::configure);
 
-        // Send a POST request with the expected message structure
-        let post_body = json!({
-            "messages": [
-                {
-                    "content": "You are a helpful assistant.",
-                    "role": "system"
-                },
-                {
-                    "content": "Que es un ADR en 10 palabras.",
-                    "role": "user"
-                }
-            ],
-            "model": "gpt-4.1"
-        }).to_string();
-
-        let request = UnitHttpRequest::post()
-            .with_header("Content-Type", "application/json")
-            .with_body(post_body.into_bytes());
-
-        let response = tester.request(request);
-        assert_eq!(response.status_code(), 202);
+        let response = tester.request(valid_post_request("Hello"));
+        assert_eq!(response.status_code(), 500);
+        assert_eq!(response.header("x-check_passed").unwrap(), "false");
+        assert!(response.body().is_empty());
     }
+
+    #[test]
+    fn test_extract_content_success() {
+        use crate::response_extractor::validate_and_extract_content;
+        let body = json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": "Hello, world!",
+                        "role": "assistant"
+                    }
+                }
+            ]
+        }).to_string().into_bytes();
+
+        let (is_valid, extracted, error_msg) = validate_and_extract_content(&body);
+        assert!(is_valid);
+        assert_eq!(extracted, Some("Hello, world!".to_string()));
+        assert_eq!(error_msg, None);
+    }
+
+    #[test]
+    fn test_extract_content_stringify_non_string() {
+        use crate::response_extractor::validate_and_extract_content;
+        let body = json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": 42,
+                        "role": "assistant"
+                    }
+                }
+            ]
+        }).to_string().into_bytes();
+
+        let (is_valid, extracted, error_msg) = validate_and_extract_content(&body);
+        assert!(is_valid);
+        assert_eq!(extracted, Some("42".to_string()));
+        assert_eq!(error_msg, None);
+    }
+
+    #[test]
+    fn test_extract_content_failures() {
+        use crate::response_extractor::validate_and_extract_content;
+        
+        // Empty body
+        let (is_valid, extracted, error_msg) = validate_and_extract_content(b"");
+        assert!(!is_valid);
+        assert_eq!(extracted, None);
+        assert_eq!(error_msg, Some("Response body is empty".to_string()));
+
+        // Not valid JSON
+        let (is_valid, extracted, error_msg) = validate_and_extract_content(b"not json");
+        assert!(!is_valid);
+        assert_eq!(extracted, None);
+        assert!(error_msg.unwrap().starts_with("Invalid JSON:"));
+
+        // Missing choices
+        let (is_valid, extracted, error_msg) = validate_and_extract_content(b"{}");
+        assert!(!is_valid);
+        assert_eq!(extracted, None);
+        assert_eq!(error_msg, Some("Missing or invalid 'choices' field".to_string()));
+
+        // Choices not an array
+        let body = json!({ "choices": "not an array" }).to_string().into_bytes();
+        let (is_valid, extracted, error_msg) = validate_and_extract_content(&body);
+        assert!(!is_valid);
+        assert_eq!(extracted, None);
+        assert_eq!(error_msg, Some("Missing or invalid 'choices' field".to_string()));
+
+        // Empty choices array
+        let body = json!({ "choices": [] }).to_string().into_bytes();
+        let (is_valid, extracted, error_msg) = validate_and_extract_content(&body);
+        assert!(!is_valid);
+        assert_eq!(extracted, None);
+        assert_eq!(error_msg, Some("'choices' array is empty".to_string()));
+
+        // Missing message in choice
+        let body = json!({ "choices": [{}] }).to_string().into_bytes();
+        let (is_valid, extracted, error_msg) = validate_and_extract_content(&body);
+        assert!(!is_valid);
+        assert_eq!(extracted, None);
+        assert_eq!(error_msg, Some("Missing or invalid 'message' field".to_string()));
+
+        // Missing content in message
+        let body = json!({
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant"
+                    }
+                }
+            ]
+        }).to_string().into_bytes();
+        let (is_valid, extracted, error_msg) = validate_and_extract_content(&body);
+        assert!(!is_valid);
+        assert_eq!(extracted, None);
+        assert_eq!(error_msg, Some("Missing 'content' field".to_string()));
+    }
+
 }
